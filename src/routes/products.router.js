@@ -1,105 +1,122 @@
-// Se importa la funcionalidad Router de Express para crear manejadores de rutas modulares.
 import { Router } from 'express';
-// Se importa la clase ProductManager para acceder a la lógica de negocio de los productos.
-import ProductManager from '../managers/ProductManager.js';
-// Se importa el módulo 'path' de Node.js para manejar rutas de archivos de manera compatible con cualquier sistema operativo.
-import path from 'path';
+// Se importa el Modelo de Productos en lugar del Manager.
+import Product from '../models/product.model.js';
 
-// Se crea una nueva instancia del Router.
 const router = Router();
-// Se crea una instancia de ProductManager, pasándole la ruta absoluta al archivo de datos.
-// 'path.resolve' asegura que la ruta sea correcta sin importar desde dónde se ejecute el servidor.
-const productManager = new ProductManager(path.resolve('src/data/products.json'));
 
+// === RUTA GET PARA OBTENER PRODUCTOS CON PAGINACIÓN, FILTROS Y ORDENAMIENTO ===
 
-// === ENDPOINTS GET ===
-
-// Se define la ruta para obtener todos los productos.
 router.get('/', async (req, res) => {
-  // Se llama al método del manager para obtener la lista completa de productos.
-  const products = await productManager.getProducts();
-  // Se envía la lista de productos como respuesta en formato JSON.
-  res.json(products);
-});
-
-// Se define la ruta para obtener un producto por su ID.
-router.get('/:pid', async (req, res) => {
-  // Se obtiene el ID del producto desde los parámetros de la URL (ej: /api/products/3).
-  // Se convierte a número porque los parámetros de la URL siempre son strings.
-  const product = await productManager.getProductById(Number(req.params.pid));
-  // Se usa un operador ternario para la respuesta:
-  // Si el producto se encontró (no es null), se envía el producto.
-  // Si no, se envía un código de estado 404 (No Encontrado) con un mensaje de error.
-  product ? res.json(product) : res.status(404).json({ error: 'Producto no encontrado' });
-});
-
-
-// === ENDPOINT POST ===
-
-// Se define la ruta para crear un nuevo producto.
-router.post('/', async (req, res) => {
-  // Se usa un bloque try...catch para manejar posibles errores que el manager pueda lanzar (ej: campos faltantes).
   try {
-    // Se pasa el cuerpo de la petición (req.body), que contiene los datos del nuevo producto, al manager.
-    const newProduct = await productManager.addProduct(req.body);
+    // 1. Se obtienen los parámetros de la query (consulta).
+    // Se asignan valores por defecto si no se proporcionan.
+    const { limit = 10, page = 1, sort, query } = req.query;
 
-    // --- Integración con WebSockets ---
-    // Se obtiene la instancia del servidor de Socket.io que se guardó previamente en la configuración de la app.
-    const io = req.app.get('socketio');
-    // Se obtiene la lista actualizada de todos los productos.
-    const products = await productManager.getProducts();
-    // Se emite un evento 'updateProducts' a TODOS los clientes conectados, enviándoles la lista nueva.
-    io.emit('updateProducts', products);
+    // 2. Se construye el objeto de filtro para la consulta a la base de datos.
+    const filter = {};
+    if (query) {
+      // Si se proporciona una query, se busca por categoría o disponibilidad.
+      // '$or' permite buscar documentos que cumplan CUALQUIERA de las condiciones.
+      filter.$or = [
+        { category: query },
+        // Se comprueba si la query es 'true' o 'false' para buscar por el campo 'status'.
+        { status: query === 'true' ? true : query === 'false' ? false : undefined }
+      ];
+    }
 
-    // Si todo sale bien, se responde con un código 201 (Creado) y el objeto del nuevo producto.
-    res.status(201).json(newProduct);
+    // 3. Se construye el objeto de opciones para la paginación y el ordenamiento.
+    const options = {
+      page: Number(page),
+      limit: Number(limit),
+      lean: true // 'lean:true' para que devuelva objetos JSON simples y no documentos de Mongoose.
+    };
+    if (sort) {
+      // Si se proporciona 'sort', se configura el ordenamiento por precio ('asc' o 'desc').
+      options.sort = { price: sort === 'asc' ? 1 : -1 };
+    }
+
+    // 4. Se realiza la consulta a la base de datos con el método 'paginate' del plugin.
+    const result = await Product.paginate(filter, options);
+
+    // 5. Se construye el objeto de respuesta final con el formato solicitado.
+    const response = {
+      status: 'success',
+      payload: result.docs,
+      totalPages: result.totalPages,
+      prevPage: result.prevPage,
+      nextPage: result.nextPage,
+      page: result.page,
+      hasPrevPage: result.hasPrevPage,
+      hasNextPage: result.hasNextPage,
+      // Se construyen los enlaces a las páginas previa y siguiente.
+      prevLink: result.hasPrevPage ? `/api/products?page=${result.prevPage}&limit=${limit}&sort=${sort || ''}&query=${query || ''}` : null,
+      nextLink: result.hasNextPage ? `/api/products?page=${result.nextPage}&limit=${limit}&sort=${sort || ''}&query=${query || ''}` : null
+    };
+
+    // Se envía la respuesta.
+    res.json(response);
+
   } catch (error) {
-    // Si el manager lanza un error, se captura y se envía un código 400 (Mala Petición) con el mensaje de error.
-    res.status(400).json({ error: error.message });
+    // Si algo sale mal, se envía una respuesta de error.
+    res.status(500).json({ status: 'error', message: error.message });
   }
 });
 
 
-// === ENDPOINT PUT ===
+// === OTRAS RUTAS (GET por ID, POST, PUT, DELETE) AHORA USANDO MONGOOSE ===
 
-// Se define la ruta para actualizar un producto existente.
-router.put('/:pid', async (req, res) => {
-  // Se llama al método para actualizar, pasando el ID de la URL y los campos a modificar del body.
-  const result = await productManager.updateProduct(Number(req.params.pid), req.body);
-  // Si la actualización fue exitosa (no devolvió null), se envía el producto actualizado.
-  // Si no, se envía un error 404.
-  result
-    ? res.json(result)
-    : res.status(404).json({ error: 'Producto no encontrado' });
+router.get('/:pid', async (req, res) => {
+  try {
+    const product = await Product.findById(req.params.pid).lean();
+    if (!product) {
+      return res.status(404).json({ status: 'error', message: 'Producto no encontrado' });
+    }
+    res.json({ status: 'success', payload: product });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
 });
 
+router.post('/', async (req, res) => {
+  try {
+    const newProduct = await Product.create(req.body);
+    // Lógica de WebSocket sigue siendo válida
+    const io = req.app.get('socketio');
+    const products = await Product.find().lean();
+    io.emit('updateProducts', products);
+    res.status(201).json({ status: 'success', payload: newProduct });
+  } catch (error) {
+    res.status(400).json({ status: 'error', message: error.message });
+  }
+});
 
-// === ENDPOINT DELETE ===
-
-// Se define la ruta para eliminar un producto.
-router.delete('/:pid', async (req, res) => {
+router.put('/:pid', async (req, res) => {
     try {
-        // Se llama al método para eliminar el producto por su ID.
-        const result = await productManager.deleteProduct(Number(req.params.pid));
-        // Si el resultado es false, significa que el producto no se encontró.
-        if (!result) {
-            return res.status(404).json({ error: 'Producto no encontrado' });
+        const updatedProduct = await Product.findByIdAndUpdate(req.params.pid, req.body, { new: true }).lean();
+        if (!updatedProduct) {
+            return res.status(404).json({ status: 'error', message: 'Producto no encontrado' });
         }
-
-        // --- Integración con WebSockets ---
-        // Al igual que en el POST, se notifica a todos los clientes que la lista de productos ha cambiado.
-        const io = req.app.get('socketio');
-        const products = await productManager.getProducts();
-        io.emit('updateProducts', products);
-        
-        // Se responde con un mensaje de éxito.
-        res.json({ mensaje: 'Producto eliminado' });
-
-    } catch(error) {
-        // Se captura cualquier otro error inesperado durante el proceso.
-        res.status(500).json({ error: 'Error interno del servidor' });
+        res.json({ status: 'success', payload: updatedProduct });
+    } catch (error) {
+        res.status(400).json({ status: 'error', message: error.message });
     }
 });
 
-// Se exporta el router configurado para ser utilizado en el archivo principal de la aplicación (app.js).
+router.delete('/:pid', async (req, res) => {
+    try {
+        const deletedProduct = await Product.findByIdAndDelete(req.params.pid);
+        if (!deletedProduct) {
+            return res.status(404).json({ status: 'error', message: 'Producto no encontrado' });
+        }
+        // Lógica de WebSocket sigue siendo válida
+        const io = req.app.get('socketio');
+        const products = await Product.find().lean();
+        io.emit('updateProducts', products);
+        res.json({ status: 'success', message: 'Producto eliminado' });
+    } catch (error) {
+        res.status(500).json({ status: 'error', message: error.message });
+    }
+});
+
+
 export default router;

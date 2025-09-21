@@ -1,49 +1,56 @@
-// Se importa la funcionalidad Router de Express.
 import { Router } from 'express';
-// Se importa el ProductManager para poder obtener la lista de productos y pasarla a las vistas.
-import ProductManager from '../managers/ProductManager.js';
-// Se importa el módulo 'path' para el manejo de rutas de archivos.
-import path from 'path';
+// Se importan los modelos para hacer las consultas a la DB.
+import Product from '../models/product.model.js';
+import Cart from '../models/cart.model.js';
 
-// Se crea una instancia del Router.
 const router = Router();
-// Se crea una instancia del ProductManager, apuntando al archivo de productos.
-const productManager = new ProductManager(path.resolve('src/data/products.json'));
 
+// --- VISTA DE PRODUCTOS CON PAGINACIÓN ---
+router.get('/products', async (req, res) => {
+  try {
+    const { page = 1, limit = 5 } = req.query; // Se establece un límite más bajo para probar la paginación
+    const options = { 
+        page: Number(page), 
+        limit: Number(limit), 
+        lean: true 
+    };
+    
+    // Se realiza la paginación de productos.
+    const result = await Product.paginate({}, options);
+    
+    // Se renderiza la vista 'products', pasando todos los datos necesarios para la paginación.
+    res.render('products', { 
+        title: 'Productos',
+        products: result.docs,
+        totalPages: result.totalPages,
+        page: result.page,
+        hasPrevPage: result.hasPrevPage,
+        hasNextPage: result.hasNextPage,
+        prevLink: result.hasPrevPage ? `/products?page=${result.prevPage}&limit=${limit}` : null,
+        nextLink: result.hasNextPage ? `/products?page=${result.nextPage}&limit=${limit}` : null
+    });
+  } catch (error) {
+    res.status(500).send({ status: 'error', message: 'Error al obtener productos' });
+  }
+});
 
-// === RUTA PARA LA VISTA PRINCIPAL (HOME) ===
-
-// Se define la ruta GET para la página de inicio ('/').
-router.get('/', async (req, res) => {
-  // Se obtiene la lista completa de productos desde el manager.
-  const products = await productManager.getProducts();
-  
-  // Se utiliza el método 'res.render()' de Express para renderizar una vista.
-  // Es como un "combinar correspondencia" para HTML.
-  // Primer argumento: 'home' -> El nombre del archivo 'home.handlebars' que se usará como plantilla.
-  // Segundo argumento: un objeto con los datos que se quieren "inyectar" en la plantilla.
-  res.render('home', {
-    title: 'Productos', // Este valor reemplazará a {{title}} en la plantilla.
-    products: products  // Este array de productos reemplazará a {{#each products}} en la plantilla.
-  });
+// --- VISTA PARA UN CARRITO ESPECÍFICO ---
+router.get('/carts/:cid', async (req, res) => {
+    try {
+        // Se busca el carrito y se pueblan los datos de los productos referenciados.
+        const cart = await Cart.findById(req.params.cid).populate('products.product').lean();
+        if (!cart) {
+            return res.status(404).send('Carrito no encontrado');
+        }
+        // Se renderiza la vista 'cart' con los datos del carrito.
+        res.render('cart', { 
+            title: 'Mi Carrito',
+            cart: cart 
+        });
+    } catch (error) {
+        res.status(500).send({ status: 'error', message: 'Error al obtener el carrito' });
+    }
 });
 
 
-// === RUTA PARA LA VISTA EN TIEMPO REAL ===
-
-// Se define la ruta GET para la página de productos en tiempo real.
-router.get('/realtimeproducts', async (req, res) => {
-  // Al igual que en la ruta anterior, se obtienen todos los productos para la carga inicial de la página.
-  const products = await productManager.getProducts();
-  
-  // Se renderiza la plantilla 'realTimeProducts.handlebars'.
-  // Se le pasan los mismos datos que a la vista 'home', ya que ambas muestran una lista inicial de productos.
-  // La magia del tiempo real ocurrirá en el lado del cliente (con JavaScript) después de que esta página se haya cargado.
-  res.render('realTimeProducts', {
-    title: 'Productos en Tiempo Real',
-    products: products
-  });
-});
-
-// Se exporta el router para que la aplicación principal (app.js) pueda usar estas rutas.
 export default router;

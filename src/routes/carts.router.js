@@ -1,65 +1,129 @@
-// Se importa la funcionalidad Router de Express para definir las rutas de la API.
 import { Router } from 'express';
-// Se importa la clase CartManager que contiene toda la lógica para manejar los carritos.
-import CartManager from '../managers/CartManager.js';
-// Se importa el módulo 'path' para un manejo correcto de las rutas de archivos.
-import path from 'path';
+// Se importan los modelos de Carrito y Producto.
+import Cart from '../models/cart.model.js';
+import Product from '../models/product.model.js';
 
-// Se crea una instancia del Router.
 const router = Router();
-// Se crea una instancia de CartManager, indicándole dónde está el archivo de datos de los carritos.
-const cartManager = new CartManager(path.resolve('src/data/carts.json'));
 
-
-// === ENDPOINT PARA CREAR UN CARRITO ===
-
-// Se define la ruta POST en la raíz ('/api/carts/') para crear un nuevo carrito.
+// --- POST para crear un nuevo carrito ---
 router.post('/', async (req, res) => {
-  // Se llama al método del manager para crear un carrito nuevo.
-  const newCart = await cartManager.createCart();
-  // Se responde con un código de estado 201 (Creado) y el objeto del nuevo carrito en formato JSON.
-  res.status(201).json(newCart);
+    try {
+        const newCart = await Cart.create({ products: [] });
+        res.status(201).json({ status: 'success', payload: newCart });
+    } catch (error) {
+        res.status(500).json({ status: 'error', message: error.message });
+    }
 });
 
-
-// === ENDPOINTS PARA OBTENER CARRITOS ===
-
-// Se define una ruta para obtener TODOS los carritos existentes.
-// Nota: Esta ruta no era un requisito estricto en la consigna, pero es útil para debugging.
-router.get('/', async (req, res) => {
-  // Se obtienen todos los carritos.
-  const carts = await cartManager.getCarts();
-  // Se devuelven en formato JSON.
-  res.json(carts);
-});
-
-
-// Se define la ruta GET para obtener un carrito específico por su ID.
+// --- GET para ver un carrito con sus productos completos (usando populate) ---
 router.get('/:cid', async (req, res) => {
-  // Se obtiene el ID del carrito ('cid') desde los parámetros de la URL.
-  const cart = await cartManager.getCartById(Number(req.params.cid));
-  
-  // Si se encuentra el carrito, se responde con el array de sus productos.
-  // Si no se encuentra, se responde con un error 404 (No Encontrado).
-  cart ? res.json(cart.products) : res.status(404).json({ error: 'Carrito no encontrado' });
+    try {
+        // Se busca el carrito y se usa .populate() para traer la información completa de los productos.
+        // 'products.product' es la ruta al campo que queremos poblar.
+        const cart = await Cart.findById(req.params.cid).populate('products.product').lean();
+        if (!cart) {
+            return res.status(404).json({ status: 'error', message: 'Carrito no encontrado' });
+        }
+        res.json({ status: 'success', payload: cart });
+    } catch (error) {
+        res.status(500).json({ status: 'error', message: error.message });
+    }
 });
 
-
-// === ENDPOINT PARA AGREGAR UN PRODUCTO A UN CARRITO ===
-
-// Se define la ruta POST para agregar un producto ('pid') a un carrito específico ('cid').
+// --- POST para agregar un producto a un carrito ---
 router.post('/:cid/product/:pid', async (req, res) => {
-  // Se obtienen ambos IDs desde los parámetros de la URL y se convierten a número.
-  const cid = Number(req.params.cid);
-  const pid = Number(req.params.pid);
-  
-  // Se llama al método del manager que contiene la lógica para agregar el producto.
-  const result = await cartManager.addProductToCart(cid, pid);
-  
-  // Si el método tiene éxito (no devuelve null), se envía el carrito actualizado.
-  // Si no, se envía un error 404, usualmente porque el carrito ('cid') no fue encontrado.
-  result ? res.json(result) : res.status(404).json({ error: 'No se pudo agregar el producto al carrito' });
+    try {
+        const cart = await Cart.findById(req.params.cid);
+        if (!cart) {
+            return res.status(404).json({ status: 'error', message: 'Carrito no encontrado' });
+        }
+        
+        const product = await Product.findById(req.params.pid);
+        if (!product) {
+            return res.status(404).json({ status: 'error', message: 'Producto no encontrado' });
+        }
+
+        // Se busca si el producto ya existe en el carrito
+        const productIndex = cart.products.findIndex(p => p.product.equals(req.params.pid));
+
+        if (productIndex !== -1) {
+            // Si ya existe, se incrementa la cantidad
+            cart.products[productIndex].quantity++;
+        } else {
+            // Si no existe, se agrega al array
+            cart.products.push({ product: req.params.pid, quantity: 1 });
+        }
+
+        await cart.save(); // Se guarda el carrito actualizado
+        res.json({ status: 'success', payload: cart });
+
+    } catch (error) {
+        res.status(500).json({ status: 'error', message: error.message });
+    }
 });
 
-// Se exporta el router configurado para ser montado en la aplicación principal.
+// --- PUT para actualizar el carrito con un array de productos ---
+router.put('/:cid', async (req, res) => {
+    try {
+        const { products } = req.body;
+        // Se valida que el arreglo de productos sea válido (opcional pero recomendado)
+        if (!Array.isArray(products)) {
+            return res.status(400).json({ status: 'error', message: 'El formato de los productos es inválido.' });
+        }
+        const cart = await Cart.findByIdAndUpdate(req.params.cid, { products }, { new: true });
+        res.json({ status: 'success', payload: cart });
+    } catch (error) {
+        res.status(500).json({ status: 'error', message: error.message });
+    }
+});
+
+// --- PUT para actualizar SÓLO la cantidad de un producto en el carrito ---
+router.put('/:cid/products/:pid', async (req, res) => {
+    try {
+        const { quantity } = req.body;
+        if (typeof quantity !== 'number') {
+            return res.status(400).json({ status: 'error', message: 'La cantidad debe ser un número.' });
+        }
+
+        const cart = await Cart.findOneAndUpdate(
+            { _id: req.params.cid, 'products.product': req.params.pid },
+            { $set: { 'products.$.quantity': quantity } },
+            { new: true }
+        );
+        
+        if (!cart) {
+            return res.status(404).json({ status: 'error', message: 'Carrito o producto no encontrado en el carrito' });
+        }
+        res.json({ status: 'success', payload: cart });
+    } catch (error) {
+        res.status(500).json({ status: 'error', message: error.message });
+    }
+});
+
+// --- DELETE para eliminar un producto específico del carrito ---
+router.delete('/:cid/products/:pid', async (req, res) => {
+    try {
+        const cart = await Cart.findByIdAndUpdate(
+            req.params.cid,
+            // '$pull' es un operador de MongoDB que elimina un elemento de un array que cumpla una condición.
+            { $pull: { products: { product: req.params.pid } } },
+            { new: true }
+        );
+        res.json({ status: 'success', payload: cart });
+    } catch (error) {
+        res.status(500).json({ status: 'error', message: error.message });
+    }
+});
+
+// --- DELETE para vaciar todos los productos del carrito ---
+router.delete('/:cid', async (req, res) => {
+    try {
+        const cart = await Cart.findByIdAndUpdate(req.params.cid, { products: [] }, { new: true });
+        res.json({ status: 'success', payload: cart });
+    } catch (error) {
+        res.status(500).json({ status: 'error', message: error.message });
+    }
+});
+
+
 export default router;
