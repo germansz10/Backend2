@@ -4,6 +4,9 @@ import express from 'express';
 import productsRouter from './routes/products.router.js';
 import cartsRouter from './routes/carts.router.js';
 import viewsRouter from './routes/views.router.js';
+// NUEVO: Importamos el router de sesiones
+import sessionsRouter from './routes/sessions.router.js'; 
+
 // Se importa la función 'engine' de express-handlebars para configurar el motor de plantillas.
 import { engine } from 'express-handlebars';
 // Se importa el módulo 'path' de Node.js para trabajar con rutas de archivos.
@@ -11,6 +14,11 @@ import path from 'path';
 // Se importan funciones para obtener la ruta del directorio actual (__dirname) en un entorno de Módulos ES.
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
+
+// --- NUEVO: Imports para Passport y Cookies ---
+import passport from 'passport';
+import initializePassport from './config/passport.config.js'; // (Este archivo lo crearemos ahora)
+import cookieParser from 'cookie-parser';
 
 // --- Configuración de __dirname para Módulos ES ---
 // Estas dos líneas son un truco necesario para replicar el comportamiento de '__dirname'
@@ -45,9 +53,18 @@ app.use(express.urlencoded({ extended: true }));
 // Cualquier archivo dentro de 'src/public' (como CSS o JS del cliente) será accesible desde el navegador.
 app.use(express.static(path.resolve(__dirname, 'public')));
 
+// --- NUEVO: Middlewares de autenticación ---
+app.use(cookieParser()); // Para leer las cookies (donde irá el token)
+initializePassport(); // Inicializamos las estrategias de Passport
+app.use(passport.initialize()); // Iniciamos Passport en Express
+// NOTA: No usamos passport.session() porque estamos usando JWT (es stateless).
+
 
 // --- Routers ---
 // Se "montan" los routers en la aplicación.
+
+// NUEVO: Router de Sesiones
+app.use('/api/sessions', sessionsRouter);
 
 // Cualquier petición que empiece con '/api/products' será manejada por 'productsRouter'.
 app.use('/api/products', productsRouter);
